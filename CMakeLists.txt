@@ -4,8 +4,6 @@
 # author: Tyson Jones (testing)
 
 # CMake initialisation.
-# CMake initialisation.
-# CMake initialisation.
 cmake_minimum_required(VERSION 3.7)
 
 message(STATUS "CMake version: ${CMAKE_VERSION}")
