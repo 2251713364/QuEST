@@ -9,7 +9,8 @@
 #define PREPARE_TEST(qureg, ref) \
     Qureg qureg = createDensityQureg(NUM_QUBITS, QUEST_ENV); \
     initDebugState(qureg); \
-    QMatrix ref = toQMatrix(qureg);
+    QMatrix ref = toQMatrix(qureg); \
+    assertQuregAndRefInDebugState(qureg, ref);
 
 /* allows concise use of Contains in catch's REQUIRE_THROWS_WITH */
 using Catch::Matchers::Contains;
@@ -240,10 +241,15 @@ TEST_CASE( "mixMultiQubitKrausMap", "[decoherence]" ) {
          * and a heap overhead when numTargs >= 4
          */
          
+        // try every size (qubit wise) map
         int numTargs = GENERATE_COPY( range(1,maxNumTargs+1) ); // inclusive upper bound
         
-        // note this is very expensive to try every arrangement (2 min runtime for numTargs=5 alone)
-        int* targs = GENERATE_COPY( sublists(range(0,NUM_QUBITS), numTargs) );
+        // previously, we tried every unique set of targets, via:
+        //      int* targs = GENERATE_COPY( sublists(range(0,NUM_QUBITS), numTargs) );
+        // alas, this is too slow for CI, so we instead try a fixed number of random sets:
+        GENERATE( range(0, 10) );
+        VLA(int, targs, numTargs);
+        setRandomTargets(targs, numTargs, NUM_QUBITS);
         
         // try the min and max number of operators, and 2 random numbers 
         // (there are way too many to try all!)
@@ -254,7 +260,7 @@ TEST_CASE( "mixMultiQubitKrausMap", "[decoherence]" ) {
         std::vector<QMatrix> matrs = getRandomKrausMap(numTargs, numOps);
                 
         // create map in QuEST datatypes
-        ComplexMatrixN ops[numOps];
+        VLA(ComplexMatrixN, ops, numOps);
         for (int i=0; i<numOps; i++) {
             ops[i] = createComplexMatrixN(numTargs);
             toComplexMatrixN(matrs[i], ops[i]);
@@ -263,7 +269,7 @@ TEST_CASE( "mixMultiQubitKrausMap", "[decoherence]" ) {
         mixMultiQubitKrausMap(qureg, targs, numTargs, ops, numOps);
                 
         // set ref -> K_i ref K_i^dagger
-        QMatrix matrRefs[numOps];
+        VLA(QMatrix, matrRefs, numOps);
         for (int i=0; i<numOps; i++) {
             matrRefs[i] = ref;
             applyReferenceOp(matrRefs[i], targs, numTargs, matrs[i]);
@@ -313,7 +319,7 @@ TEST_CASE( "mixMultiQubitKrausMap", "[decoherence]" ) {
             int numOps = GENERATE_REF( -1, 0, maxNumOps + 1 );
                         
             // make valid targets to avoid triggering target validation
-            int targs[numTargs];
+            VLA(int, targs, numTargs);
             for (int i=0; i<numTargs; i++)
                 targs[i] = i;
             REQUIRE_THROWS_WITH( mixMultiQubitKrausMap(qureg, targs, numTargs, NULL, numOps), Contains("operators may be specified") );
@@ -330,7 +336,7 @@ TEST_CASE( "mixMultiQubitKrausMap", "[decoherence]" ) {
             int numOps = (2*numTargs)*(2*numTargs);
             
             // no need to initialise ops, but set their attribs correct to avoid triggering other validation
-            ComplexMatrixN ops[numOps];
+            VLA(ComplexMatrixN, ops, numOps);
             for (int i=0; i<numOps; i++)
                 ops[i].numQubits = numTargs;
             
@@ -338,7 +344,7 @@ TEST_CASE( "mixMultiQubitKrausMap", "[decoherence]" ) {
             ops[GENERATE_COPY( range(0,numTargs) )].real = NULL;
              
             // make valid targets to avoid triggering target validation
-            int targs[numTargs];
+            VLA(int, targs, numTargs);
             for (int i=0; i<numTargs; i++)
                 targs[i] = i;
                
@@ -349,7 +355,7 @@ TEST_CASE( "mixMultiQubitKrausMap", "[decoherence]" ) {
             // make valid (dimension-wise) max-qubits Kraus map
             int numTargs = NUM_QUBITS;
             int numOps = (2*numTargs)*(2*numTargs);
-            ComplexMatrixN ops[numOps];
+            VLA(ComplexMatrixN, ops, numOps);
             for (int i=0; i<numOps; i++)
                 ops[i] = createComplexMatrixN(numTargs);
             
@@ -359,7 +365,7 @@ TEST_CASE( "mixMultiQubitKrausMap", "[decoherence]" ) {
             ops[badInd] = createComplexMatrixN(numTargs - 1);
             
             // make valid targets to avoid triggering target validation
-            int targs[numTargs];
+            VLA(int, targs, numTargs);
             for (int i=0; i<numTargs; i++)
                 targs[i] = i;
                 
@@ -376,17 +382,17 @@ TEST_CASE( "mixMultiQubitKrausMap", "[decoherence]" ) {
             
             // generate a valid map
             std::vector<QMatrix> matrs = getRandomKrausMap(numTargs, numOps);
-            ComplexMatrixN ops[numOps];
+            VLA(ComplexMatrixN, ops, numOps);
             for (int i=0; i<numOps; i++) {
                 ops[i] = createComplexMatrixN(numTargs);
                 toComplexMatrixN(matrs[i], ops[i]);
             }
             
             // make only one invalid
-            ops[GENERATE_REF( range(0,numOps) )].real[0][0] = 0;
+            ops[GENERATE_REF( range(0,numOps) )].real[0][0] = -123456789;
             
             // make valid targets to avoid triggering target validation
-            int targs[numTargs];
+            VLA(int, targs, numTargs);
             for (int i=0; i<numTargs; i++)
                 targs[i] = i;
             
@@ -527,13 +533,13 @@ TEST_CASE( "mixKrausMap", "[decoherence]" ) {
         int numOps = GENERATE( range(1,5) ); // max 4 inclusive
         std::vector<QMatrix> matrs = getRandomKrausMap(1, numOps);
         
-        ComplexMatrix2 ops[numOps];
+        VLA(ComplexMatrix2, ops, numOps);
         for (int i=0; i<numOps; i++)
             ops[i] = toComplexMatrix2(matrs[i]);
         mixKrausMap(qureg, target, ops, numOps);
         
         // set ref -> K_i ref K_i^dagger
-        QMatrix matrRefs[numOps];
+        VLA(QMatrix, matrRefs, numOps);
         for (int i=0; i<numOps; i++) {
             matrRefs[i] = ref;
             applyReferenceOp(matrRefs[i], target, matrs[i]);
@@ -556,7 +562,7 @@ TEST_CASE( "mixKrausMap", "[decoherence]" ) {
             // valid Kraus map
             int numOps = GENERATE( range(1,5) ); // max 4 inclusive
             std::vector<QMatrix> matrs = getRandomKrausMap(1, numOps);
-            ComplexMatrix2 ops[numOps];
+            VLA(ComplexMatrix2, ops, numOps);
             for (int i=0; i<numOps; i++)
                 ops[i] = toComplexMatrix2(matrs[i]);
                 
@@ -605,13 +611,13 @@ TEST_CASE( "mixNonTPKrausMap", "[decoherence]" ) {
         for (int i=0; i<numOps; i++)
             matrs.push_back(getRandomQMatrix(2));
         
-        ComplexMatrix2 ops[numOps];
+        VLA(ComplexMatrix2, ops, numOps);
         for (int i=0; i<numOps; i++)
             ops[i] = toComplexMatrix2(matrs[i]);
         mixNonTPKrausMap(qureg, target, ops, numOps);
         
         // set ref -> K_i ref K_i^dagger
-        QMatrix matrRefs[numOps];
+        VLA(QMatrix, matrRefs, numOps);
         for (int i=0; i<numOps; i++) {
             matrRefs[i] = ref;
             applyReferenceOp(matrRefs[i], target, matrs[i]);
@@ -671,8 +677,12 @@ TEST_CASE( "mixNonTPMultiQubitKrausMap", "[decoherence]" ) {
          
         int numTargs = GENERATE_COPY( range(1,maxNumTargs+1) ); // inclusive upper bound
         
-        // note this is very expensive to try every arrangement (2 min runtime for numTargs=5 alone)
-        int* targs = GENERATE_COPY( sublists(range(0,NUM_QUBITS), numTargs) );
+        // previously, we tried every unique set of targets, via:
+        //      int* targs = GENERATE_COPY( sublists(range(0,NUM_QUBITS), numTargs) );
+        // alas, this is too slow for CI, so we instead try a fixed number of random sets:
+        GENERATE( range(0, 10) );
+        VLA(int, targs, numTargs);
+        setRandomTargets(targs, numTargs, NUM_QUBITS);
         
         // try the min and max number of operators, and 2 random numbers 
         // (there are way too many to try all!)
@@ -685,7 +695,7 @@ TEST_CASE( "mixNonTPMultiQubitKrausMap", "[decoherence]" ) {
             matrs.push_back(getRandomQMatrix(1 << numTargs));
                 
         // create map in QuEST datatypes
-        ComplexMatrixN ops[numOps];
+        VLA(ComplexMatrixN, ops, numOps);
         for (int i=0; i<numOps; i++) {
             ops[i] = createComplexMatrixN(numTargs);
             toComplexMatrixN(matrs[i], ops[i]);
@@ -694,7 +704,7 @@ TEST_CASE( "mixNonTPMultiQubitKrausMap", "[decoherence]" ) {
         mixNonTPMultiQubitKrausMap(qureg, targs, numTargs, ops, numOps);
                 
         // set ref -> K_i ref K_i^dagger
-        QMatrix matrRefs[numOps];
+        VLA(QMatrix, matrRefs, numOps);
         for (int i=0; i<numOps; i++) {
             matrRefs[i] = ref;
             applyReferenceOp(matrRefs[i], targs, numTargs, matrs[i]);
@@ -744,7 +754,7 @@ TEST_CASE( "mixNonTPMultiQubitKrausMap", "[decoherence]" ) {
             int numOps = GENERATE_REF( -1, 0, maxNumOps + 1 );
                         
             // make valid targets to avoid triggering target validation
-            int targs[numTargs];
+            VLA(int, targs, numTargs);
             for (int i=0; i<numTargs; i++)
                 targs[i] = i;
             REQUIRE_THROWS_WITH( mixNonTPMultiQubitKrausMap(qureg, targs, numTargs, NULL, numOps), Contains("operators may be specified") );
@@ -761,7 +771,7 @@ TEST_CASE( "mixNonTPMultiQubitKrausMap", "[decoherence]" ) {
             int numOps = (2*numTargs)*(2*numTargs);
             
             // no need to initialise ops, but set their attribs correct to avoid triggering other validation
-            ComplexMatrixN ops[numOps];
+            VLA(ComplexMatrixN, ops, numOps);
             for (int i=0; i<numOps; i++)
                 ops[i].numQubits = numTargs;
             
@@ -769,7 +779,7 @@ TEST_CASE( "mixNonTPMultiQubitKrausMap", "[decoherence]" ) {
             ops[GENERATE_COPY( range(0,numTargs) )].real = NULL;
              
             // make valid targets to avoid triggering target validation
-            int targs[numTargs];
+            VLA(int, targs, numTargs);
             for (int i=0; i<numTargs; i++)
                 targs[i] = i;
                
@@ -780,7 +790,7 @@ TEST_CASE( "mixNonTPMultiQubitKrausMap", "[decoherence]" ) {
             // make valid (dimension-wise) max-qubits Kraus map
             int numTargs = NUM_QUBITS;
             int numOps = (2*numTargs)*(2*numTargs);
-            ComplexMatrixN ops[numOps];
+            VLA(ComplexMatrixN, ops, numOps);
             for (int i=0; i<numOps; i++)
                 ops[i] = createComplexMatrixN(numTargs);
             
@@ -790,7 +800,7 @@ TEST_CASE( "mixNonTPMultiQubitKrausMap", "[decoherence]" ) {
             ops[badInd] = createComplexMatrixN(numTargs - 1);
             
             // make valid targets to avoid triggering target validation
-            int targs[numTargs];
+            VLA(int, targs, numTargs);
             for (int i=0; i<numTargs; i++)
                 targs[i] = i;
                 
@@ -858,14 +868,14 @@ TEST_CASE( "mixNonTPTwoQubitKrausMap", "[decoherence]" ) {
         for (int i=0; i<numOps; i++)
             matrs.push_back(getRandomQMatrix(4));
         
-        ComplexMatrix4 ops[numOps];
+        VLA(ComplexMatrix4, ops, numOps);
         for (int i=0; i<numOps; i++)
             ops[i] = toComplexMatrix4(matrs[i]);
         mixNonTPTwoQubitKrausMap(qureg, targ1, targ2, ops, numOps);
         
         // set ref -> K_i ref K_i^dagger
         int targs[2] = {targ1, targ2};
-        QMatrix matrRefs[numOps];
+        VLA(QMatrix, matrRefs, numOps);
         for (int i=0; i<numOps; i++) {
             matrRefs[i] = ref;
             applyReferenceOp(matrRefs[i], targs, 2, matrs[i]);
@@ -1052,14 +1062,14 @@ TEST_CASE( "mixTwoQubitKrausMap", "[decoherence]" ) {
         int numOps = GENERATE( range(1,17) ); // max 16 inclusive
         std::vector<QMatrix> matrs = getRandomKrausMap(2, numOps);
         
-        ComplexMatrix4 ops[numOps];
+        VLA(ComplexMatrix4, ops, numOps);
         for (int i=0; i<numOps; i++)
             ops[i] = toComplexMatrix4(matrs[i]);
         mixTwoQubitKrausMap(qureg, targ1, targ2, ops, numOps);
         
         // set ref -> K_i ref K_i^dagger
         int targs[2] = {targ1, targ2};
-        QMatrix matrRefs[numOps];
+        VLA(QMatrix, matrRefs, numOps);
         for (int i=0; i<numOps; i++) {
             matrRefs[i] = ref;
             applyReferenceOp(matrRefs[i], targs, 2, matrs[i]);
@@ -1082,7 +1092,7 @@ TEST_CASE( "mixTwoQubitKrausMap", "[decoherence]" ) {
             // valid Kraus map
             int numOps = GENERATE( range(1,16) );
             std::vector<QMatrix> matrs = getRandomKrausMap(2, numOps);
-            ComplexMatrix4 ops[numOps];
+            VLA(ComplexMatrix4, ops, numOps);
             for (int i=0; i<numOps; i++)
                 ops[i] = toComplexMatrix4(matrs[i]);
                 

@@ -35,6 +35,23 @@ extern QuESTEnv QUEST_ENV;
  */
 #define NUM_QUBITS 5
 
+#ifndef M_PI
+#define M_PI 3.141592653589793238
+#endif
+
+/** This is absolute war against MSVC C++14 which does not permit variable-length 
+ * arrays. We hunted down the previous VLAs with regex:
+ *     ([a-zA-Z0-9]+?) ([a-zA-Z0-9]+?)\[([a-zA-Z0-9]+?)\]
+ * replacing results with:
+ *      VLA($1, $2, $3)
+ * We perform this replacement even for non-MSVC compilers, since some dislike 
+ * VLAs of non-POD elemets (like of QMatrix, compiling with NVCC + Clang). 
+ * Eat it, Bill!
+ */
+#define VLA(type, name, len) \
+    std::vector<type> name##_vla_hack_vec(len); \
+    type* name = name##_vla_hack_vec.data();
+
 /** A complex square matrix. 
  * Should be initialised with getZeroMatrix().
  * These have all the natural linear-algebra operator overloads, including 
@@ -58,6 +75,26 @@ typedef std::vector<std::vector<qcomp>> QMatrix;
  * @author Tyson Jones
  */
 typedef std::vector<qcomp> QVector;
+
+/** Asserts the given statevector qureg and reference agree, and are properly initialised in the debug state.
+ * Assertion uses the DEMAND() macro, calling Catch2's FAIL() if unsatisfied, so does not contribute
+ * toward unit test statistics. This should be called within every PREPARE_TEST macro, to ensure that
+ * the test states themselves are initially correct, and do not accidentally agree by (e.g.) being all-zero.
+ * 
+ * @ingroup testutilities
+ * @author Tyson Jones
+ */
+void assertQuregAndRefInDebugState(Qureg qureg, QVector ref);
+
+/** Asserts the given density qureg and reference agree, and are properly initialised in the debug state.
+ * Assertion uses the DEMAND() macro, calling Catch2's FAIL() if unsatisfied, so does not contribute
+ * toward unit test statistics. This should be called within every PREPARE_TEST macro, to ensure that
+ * the test states themselves are initially correct, and do not accidentally agree by (e.g.) being all-zero.
+ * 
+ * @ingroup testutilities
+ * @author Tyson Jones
+ */
+void assertQuregAndRefInDebugState(Qureg qureg, QMatrix ref);
 
 /* (Excluded from Doxygen doc)
  *
@@ -174,6 +211,14 @@ QMatrix toQMatrix(PauliHamil hamil);
  * @author Tyson Jones
  */
 QMatrix toQMatrix(DiagonalOp op);
+
+/** Returns a 2^\p n-by-2^\p n complex diagonal matrix form of the SubDiagonalOp,
+ * where n = op.numQubits
+ *
+ * @ingroup testutilities
+ * @author Tyson Jones
+ */
+QMatrix toQMatrix(SubDiagonalOp op);
 
 /** Returns a diagonal complex matrix formed by the given vector 
  *
@@ -804,6 +849,14 @@ void applyReferenceOp(QVector &state, int targ, QMatrix op);
  */
 void applyReferenceMatrix(QVector &state, int* ctrls, int numCtrls, int *targs, int numTargs, QMatrix op);
 
+/** Modifies the state-vector \p state to be the result of left-multiplying the multi-target operator 
+ * matrix \p op, with the specified target qubits (assuming no control qubits). T
+ *
+ * @ingroup testutilities 
+ * @author Tyson Jones
+ */
+void applyReferenceMatrix(QVector &state, int *targs, int numTargs, QMatrix op);
+
 /** Modifies the density matrix \p state to be the result of left-multiplying the multi-target operator 
  * matrix \p op, with the specified control and target qubits (in \p ctrls and \p targs 
  * respectively). Here, \p op is treated like a simple matrix and is hence left-multiplied 
@@ -813,6 +866,15 @@ void applyReferenceMatrix(QVector &state, int* ctrls, int numCtrls, int *targs, 
  * @author Tyson Jones
  */
 void applyReferenceMatrix(QMatrix &state, int* ctrls, int numCtrls, int *targs, int numTargs, QMatrix op);
+
+/** Modifies the density matrix \p state to be the result of left-multiplying the multi-target operator 
+ * matrix \p op, with the target qubits (assuming no control qubits). 
+ * Here, \p op is treated like a simple matrix and is hence left-multiplied onto the state once.
+ *
+ * @ingroup testutilities 
+ * @author Tyson Jones
+ */
+void applyReferenceMatrix(QMatrix &state, int *targs, int numTargs, QMatrix op); 
 
 /** Performs a hardware-agnostic comparison of the given quregs, checking 
  * whether the difference between the real and imaginary components of every amplitude
@@ -968,6 +1030,14 @@ void setRandomPauliSum(PauliHamil hamil);
  * @author Tyson Jones
  */
 void setRandomDiagPauliHamil(PauliHamil hamil);
+
+/** Populates \p targs with a random selection of \p numTargs elements from [0,\p numQb-1].
+ * List \p targs does not need to be initialised and its elements are overwritten.
+ * 
+ * @ingroup testutilities 
+ * @author Tyson Jones
+ */
+void setRandomTargets(int* targs, int numTargs, int numQb);
 
 /** Returns the two's complement signed encoding of the unsigned number decimal, 
  * which must be a number between 0 and 2^numBits (exclusive). The returned number 

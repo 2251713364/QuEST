@@ -140,6 +140,38 @@ QVector operator * (const QMatrix& m, const QVector& v) {
     return prod;
 }
 
+void assertQuregAndRefInDebugState(Qureg qureg, QVector ref) {
+    DEMAND( qureg.isDensityMatrix == 0 );
+    DEMAND( qureg.numAmpsTotal == (long long int) ref.size() );
+
+    // assert ref is in the debug state (else initDebugState failed)
+    for (size_t i=0; i<ref.size(); i++) {
+        qcomp val = qcomp(.2*i, .2*i+.1);
+        DEMAND( abs(ref[i] - val) < REAL_EPS );
+    }
+
+    // check qureg and ref agree
+    DEMAND( areEqual(qureg, ref) );
+}
+
+void assertQuregAndRefInDebugState(Qureg qureg, QMatrix ref) {
+    DEMAND( qureg.isDensityMatrix == 1 );
+    DEMAND( (1LL << qureg.numQubitsRepresented) == (long long int) ref.size() );
+
+    // assert ref is in the (column-wise) debug state (else initDebugState failed)
+    size_t i = 0;
+    for (size_t c=0; c<ref.size(); c++) {
+        for (size_t r=0; r<ref.size(); r++) {
+            qcomp val = qcomp(.2*i, .2*i+.1);
+            DEMAND( abs(ref[r][c] - val) < REAL_EPS );
+            i++;
+        }
+    }
+
+    // check qureg and ref agree
+    DEMAND( areEqual(qureg, ref) );
+}
+
 QVector getKroneckerProduct(QVector b, QVector a) {
 
     QVector prod = QVector(a.size() * b.size());
@@ -184,6 +216,14 @@ QMatrix getKroneckerProduct(QMatrix a, QMatrix b) {
                 for (size_t j=0; j<a.size(); j++)
                     prod[r+b.size()*i][c+b.size()*j] = a[i][j] * b[r][c];
     return prod;
+}
+
+QMatrix getTranspose(QMatrix a) {
+    QMatrix b = a;
+    for (size_t r=0; r<a.size(); r++)
+        for (size_t c=0; c<a.size(); c++)
+            b[r][c] = a[c][r];
+    return b;
 }
 
 QMatrix getConjugateTranspose(QMatrix a) {
@@ -386,6 +426,7 @@ QMatrix getRandomQMatrix(int dim) {
             // generate 2 normally-distributed random numbers via Box-Muller
             qreal a = rand()/(qreal) RAND_MAX;
             qreal b = rand()/(qreal) RAND_MAX;
+            if (a == 0) a = REAL_EPS; // prevent rand()=0 creation of NaN
             qreal r1 = sqrt(-2 * log(a)) * cos(2 * 3.14159265 * b);
             qreal r2 = sqrt(-2 * log(a)) * sin(2 * 3.14159265 * b);
             
@@ -444,6 +485,8 @@ QVector getRandomQVector(int dim) {
 }
 
 QVector getNormalised(QVector vec) {
+
+    // compute the vec norm via Kahan summation to suppress numerical error
     qreal norm = 0;
     qreal y, t, c;
     c = 0;
@@ -524,55 +567,77 @@ QVector getMatrixDiagonal(QMatrix matr) {
 }
 
 int getRandomInt(int min, int max) {
-    return round(getRandomReal(min, max-1));
+    return (int) round(getRandomReal(min, max-1));
 }
 
-QMatrix getRandomUnitary(int numQb) {
-    DEMAND( numQb >= 1 );
+QMatrix getOrthonormalisedRows(QMatrix matr) {
 
-    QMatrix matr = getRandomQMatrix(1 << numQb);
-
+    // perform the Gram-Schmidt process, processing each row of matr in-turn
     for (size_t i=0; i<matr.size(); i++) {
         QVector row = matr[i];
         
         // compute new orthogonal row by subtracting proj row onto prevs
         for (int k=i-1; k>=0; k--) {
 
-            // compute row . prev = sum_n row_n conj(prev_n)
-            qcomp prod = 0;
-            for (size_t n=0; n<row.size(); n++)
-                prod += row[n] * conj(matr[k][n]);
+            // compute inner_product(row, prev) = row . conj(prev)
+            qcomp prod = row * matr[k];
                             
             // subtract (proj row onto prev) = (prod * prev) from final row
-            for (size_t n=0; n<row.size(); n++)
-                matr[i][n] -= prod * matr[k][n];
+            matr[i] -= prod * matr[k];
         }
     
-        // compute row magnitude 
-        qreal mag = 0;
-        for (size_t j=0; j<row.size(); j++)
-            mag += pow(abs(matr[i][j]), 2);
-        mag = sqrt(mag);
-        
-        // normalise row
-        for (size_t j=0; j<row.size(); j++)
-            matr[i][j] /= mag;
+        // normalise the row 
+        matr[i] = getNormalised(matr[i]);
     }
-    
-    // ensure matrix is indeed unitary 
-    QMatrix conjprod = matr * getConjugateTranspose(matr);
-    QMatrix iden = getIdentityMatrix(1 << numQb);
-    
-    // generating big unitary matrices is hard; if we fail, default to identity
-    if ( numQb >= 3 && !areEqual(conjprod, iden) ) {
-        
-        matr = getIdentityMatrix(1 << numQb);
-        conjprod = matr;
-    }
-    DEMAND( areEqual(conjprod, iden) );
     
     // return the new orthonormal matrix
     return matr;
+}
+
+QMatrix getRandomDiagonalUnitary(int numQb) {
+    DEMAND( numQb >= 1 );
+
+    QMatrix matr = getZeroMatrix(1 << numQb);
+    for (size_t i=0; i<matr.size(); i++)
+        matr[i][i] = expI(getRandomReal(0,4*M_PI));
+
+    return matr;
+}
+
+QMatrix getRandomUnitary(int numQb) {
+    DEMAND( numQb >= 1 );
+
+    // create Z ~ random complex matrix (distribution not too important)
+    size_t dim = 1 << numQb;
+    QMatrix matrZ = getRandomQMatrix(dim);
+    QMatrix matrZT = getTranspose(matrZ);
+
+    // create Z = Q R (via QR decomposition) ...
+    QMatrix matrQT = getOrthonormalisedRows(matrZ);
+    QMatrix matrQ = getTranspose(matrQT);
+    QMatrix matrR = getZeroMatrix(dim);
+
+    // ... where R_rc = (columm c of Z) . (column r of Q) = (row c of ZT) . (row r of QT)
+    for (size_t r=0; r<dim; r++)
+        for (size_t c=r; c<dim; c++)
+            matrR[r][c] = matrZT[c] * matrQT[r];
+
+    // create D = normalised diagonal of R
+    QMatrix matrD = getZeroMatrix(dim);
+    for (size_t i=0; i<dim; i++)
+        matrD[i][i] = matrR[i][i] / abs(matrR[i][i]);
+
+    // create U = Q D
+    QMatrix matrU = matrQ * matrD;
+
+    // in the rare scenario the result is not sufficiently precisely unitary,
+    // replace it with a trivially unitary diagonal matrix
+    QMatrix daggerProd = matrU * getConjugateTranspose(matrU);
+    QMatrix iden = getIdentityMatrix(dim);
+    if( ! areEqual(daggerProd, iden) )
+        matrU = getRandomDiagonalUnitary(numQb);
+
+    return matrU;
 }
 
 std::vector<QMatrix> getRandomKrausMap(int numQb, int numOps) {
@@ -585,7 +650,7 @@ std::vector<QMatrix> getRandomKrausMap(int numQb, int numOps) {
         ops.push_back(getRandomUnitary(numQb));
         
     // generate random weights
-    qreal weights[numOps];
+    std::vector<qreal> weights(numOps);
     for (int i=0; i<numOps; i++)
         weights[i] = getRandomReal(0, 1);
         
@@ -594,7 +659,7 @@ std::vector<QMatrix> getRandomKrausMap(int numQb, int numOps) {
     for (int i=0; i<numOps; i++)
         weightSum += weights[i];
     for (int i=0; i<numOps; i++)
-        weights[i] = sqrt(weights[i]/weightSum);
+        weights[i] = sqrt((qreal) weights[i]/weightSum);
         
     // normalise ops
     for (int i=0; i<numOps; i++)
@@ -605,8 +670,13 @@ std::vector<QMatrix> getRandomKrausMap(int numQb, int numOps) {
     QMatrix prodSum = getZeroMatrix(1 << numQb);
     for (int i=0; i<numOps; i++)
         prodSum += getConjugateTranspose(ops[i]) * ops[i];
-    DEMAND( areEqual(prodSum, iden) );
-        
+
+    // in the rare scenario it is insufficiently numerically precise,
+    // replace the map with trivially precise diagonals
+    if( ! areEqual(prodSum, iden) )
+        for (int i=0; i<numOps; i++)
+            ops[i] = weights[i] * getRandomDiagonalUnitary(numQb);
+
     return ops;
 }
 
@@ -617,7 +687,7 @@ std::vector<QVector> getRandomOrthonormalVectors(int numQb, int numStates) {
     // set of orthonormal vectors
     std::vector<QVector> vecs;
     
-    for (size_t n=0; n<numStates; n++) {
+    for (int n=0; n<numStates; n++) {
         
         QVector vec = getRandomStateVector(numQb);
         
@@ -660,7 +730,7 @@ QVector getDFT(QVector in) {
     
     for (size_t x=0; x<dim; x++) {
         dftVec[x] = 0;
-        for (long long int y=0; y<dim; y++)
+        for (size_t y=0; y<dim; y++)
             dftVec[x] += expI(phaseFac * x * y) * in[y];
         dftVec[x] *= ampFac;
     }
@@ -686,7 +756,7 @@ long long int setBit(long long int num, int bitInd, int bitVal) {
     return (num & ~(1UL << bitInd)) | (bitVal << bitInd);
 }
 
-long long int getIndexOfTargetValues(long long int ref, int* targs, int numTargs, int targVal) {
+long long int getIndexOfTargetValues(long long int ref, int* targs, int numTargs, long long int targVal) {
     // ref state is the starting index, where the targets can be in any bit state;
     // on the bits of the non-target qubits matter 
     
@@ -700,9 +770,10 @@ long long int getIndexOfTargetValues(long long int ref, int* targs, int numTargs
 QVector getDFT(QVector in, int* targs, int numTargs) {
     
     QVector out = QVector(in.size());
+    long long int inDim = (long long int) in.size();
     long long int targDim = (1LL << numTargs);
     
-    for (size_t j=0; j<in.size(); j++) {
+    for (long long int j=0; j<inDim; j++) {
         
         // |j> = |x> (x) |...>, but mixed (not separated)
         long long int x = getValueOfTargets(j, targs, numTargs);
@@ -845,12 +916,23 @@ void applyReferenceMatrix(
     applyReferenceOp(state, ctrls, numCtrls, targs, numTargs, op);
 }
 void applyReferenceMatrix(
+    QVector &state, int *targs, int numTargs, QMatrix op
+) {
+    // for state-vectors, the op is always just left-multiplied
+    applyReferenceOp(state, targs, numTargs, op);
+}
+void applyReferenceMatrix(
     QMatrix &state, int* ctrls, int numCtrls, int *targs, int numTargs, QMatrix op
 ) {
     // for density matrices, op is left-multiplied only
     int numQubits = calcLog2(state.size());
     QMatrix leftOp = getFullOperatorMatrix(ctrls, numCtrls, targs, numTargs, op, numQubits);
     state = leftOp * state;
+}
+void applyReferenceMatrix(
+    QMatrix &state, int *targs, int numTargs, QMatrix op
+) {
+    applyReferenceMatrix(state, NULL, 0, targs, numTargs, op);
 }
 
 bool areEqual(Qureg qureg1, Qureg qureg2, qreal precision) {
@@ -949,12 +1031,15 @@ bool areEqual(Qureg qureg, QMatrix matr, qreal precision) {
         
         // DEBUG
         if (!ampsAgree) {
-            
-            // debug
             char buff[200];
-            sprintf(buff, "[msg from utilities.cpp] node %d has a disagreement at (global) index %lld of (%s) + i(%s)\n",
-                qureg.chunkId, globalInd, REAL_STRING_FORMAT, REAL_STRING_FORMAT);
-            printf(buff, realDif, imagDif);
+            sprintf(buff, "[msg from utilities.cpp] node %d has a disagreement at %lld of (%s) + i(%s):\n\t[qureg] %s + i(%s) VS [ref] %s + i(%s)\n",
+                qureg.chunkId, startInd+i,
+                REAL_STRING_FORMAT, REAL_STRING_FORMAT, REAL_STRING_FORMAT, 
+                REAL_STRING_FORMAT, REAL_STRING_FORMAT, REAL_STRING_FORMAT);
+            printf(buff,
+                realDif, imagDif,
+                qureg.stateVec.real[i], qureg.stateVec.imag[i],
+                real(matr[row][col]), imag(matr[row][col]));
         }
 
         // break loop as soon as amplitudes disagree
@@ -1097,7 +1182,7 @@ QMatrix toQMatrix(Qureg qureg) {
 #endif
         
     // copy full state vector into a QVector
-    long long int dim = (1 << qureg.numQubitsRepresented);
+    long long int dim = (1LL << qureg.numQubitsRepresented);
     QMatrix matr = getZeroMatrix(dim);
     for (long long int n=0; n<qureg.numAmpsTotal; n++)
         matr[n%dim][n/dim] = qcomp(fullRe[n], fullIm[n]);
@@ -1198,6 +1283,13 @@ QMatrix toQMatrix(DiagonalOp op) {
     return mat;
 }
 
+QMatrix toQMatrix(SubDiagonalOp op) {
+    QMatrix mat = getZeroMatrix(1LL << op.numQubits);
+    for (size_t i=0; i<mat.size(); i++)
+        mat[i][i] = qcomp(op.real[i], op.imag[i]);
+    return mat;
+}
+
 void toQureg(Qureg qureg, QVector vec) {
     DEMAND( !qureg.isDensityMatrix );
     DEMAND( qureg.numAmpsTotal == (long long int) vec.size() );
@@ -1213,7 +1305,7 @@ void toQureg(Qureg qureg, QVector vec) {
 }
 void toQureg(Qureg qureg, QMatrix mat) {
     DEMAND( qureg.isDensityMatrix );
-    DEMAND( (1 << qureg.numQubitsRepresented) == (long long int) mat.size() );
+    DEMAND( (1LL << qureg.numQubitsRepresented) == (long long int) mat.size() );
     
     syncQuESTEnv(QUEST_ENV);
     
@@ -1248,6 +1340,24 @@ void setRandomDiagPauliHamil(PauliHamil hamil) {
             else
                 hamil.pauliCodes[i++] = PAULI_I;
     }
+}
+
+void setRandomTargets(int* targs, int numTargs, int numQb) {
+    DEMAND( numQb >= 1 );
+    DEMAND( numTargs >= 1);
+    DEMAND( numTargs <= numQb );
+
+    // create an ordered list of all possible qubits
+    VLA(int, allQb, numQb);
+    for (int q=0; q<numQb; q++)
+        allQb[q] = q;
+
+    // shuffle all qubits
+    std::random_shuffle(&allQb[0], &allQb[numQb]);
+
+    // select numTargs of all qubits
+    for (int i=0; i<numTargs; i++)
+        targs[i] = allQb[i];
 }
 
 QMatrix toQMatrix(qreal* coeffs, pauliOpType* paulis, int numQubits, int numTerms) {
@@ -1326,7 +1436,7 @@ void setDiagMatrixOverrides(QMatrix &matr, int* numQubitsPerReg, int numRegs, en
     DEMAND( matr.size() == (1 << totalQb) );
     
     // record whether a diagonal index has been already overriden
-    int hasBeenOverriden[1 << totalQb];
+    std::vector<int> hasBeenOverriden(1 << totalQb);
     for (int i=0; i<(1 << totalQb); i++)
         hasBeenOverriden[i] = 0;
     
@@ -1510,7 +1620,7 @@ Catch::Generators::GeneratorWrapper<int*> sublists(
 Catch::Generators::GeneratorWrapper<int*> sublists(
     Catch::Generators::GeneratorWrapper<int>&& gen, int numSamps
 ) {
-    int exclude[] = {};  
+    int exclude[] = {-1}; // non-empty to satisfy MSVC
     return Catch::Generators::GeneratorWrapper<int*>(
         std::unique_ptr<Catch::Generators::IGenerator<int*>>(
             new SubListGenerator(std::move(gen), numSamps, exclude, 0)));
